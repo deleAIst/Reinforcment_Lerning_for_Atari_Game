@@ -26,10 +26,10 @@ class FrameStartGameWapper(gym.Wrapper):
         
     def step(self, action: int)-> Tuple[np.ndarray, float, bool, dict]:
         observation, reward, done, info = self.env.step(action)
-        self.frames.append(opservation)
+        self.frames.append(observation)
         frame_stack = np.asarray(self.frames, dtype=np.float32) #(4, 84, 84)
-        frame_stack = np.moveaxis(frame_stack, source=0, axis=0)#(84, 84, 4)
-        frame_stack = np.expand_dims(frame_stack, axis=0) #(1, 84, 84, 4)
+        frame_stack = np.moveaxis(frame_stack, 0, 0)#(84, 84, 4)
+        frame_stack = np.expand_dims(frame_stack, 0) #(1, 84, 84, 4)
         return frame_stack, reward, done, info
     
     def reset(self, **kwargs: Any) -> np.ndarray:
