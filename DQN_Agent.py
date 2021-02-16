@@ -13,7 +13,8 @@ import torch.nn.functional as F
 from DQN_Net import DQN
 from DQN_Wapper import make_env
 
-
+DQN_PATH=os.path.join("/home/dennis/Studium/RNFL_Atari/Reinforcment_Lerning_for_Atari_Game/Models")
+TARGET_DQN_PATH=os.path.join("/home/dennis/Studium/RNFL_Atari/Reinforcment_Lerning_for_Atari_Game/Models")
 class Agent:
     def __init__(self, game: str):
         # DQN Env Variables
@@ -105,21 +106,29 @@ class Agent:
         #states = torch.cat(torch.Tensor(data=states, dtype=torch.float32, device=self.device ))
         next_states = np.concatenate(next_states).astype(np.float32)
         #next_states = torch.cat(torch.Tensor(data=next_states, dtype=torch.float32, device=self.device ))
+        # actions = np.concatenate(actions)
+        states = torch.from_numpy(states)
+        next_states = torch.from_numpy(next_states)
+        #actions = torch.Tensor(actions.astype(np.int32)).to(self.device)
 
-        states = torch.Tensor(states, device=self.device)
-        next_states = torch.Tensor(next_states, device=self.device)
+        q_values = self.dqn(states)
+        q_values_=q_values
 
-        q_values = self.dqn(states).gather(1, actions)
+        #q_values_next = torch.zeros(self.batch_size, device=self.device)
+        q_values_next = self.target_dqn(next_states).max(1)[0].detach()
+       # print(f"q_values: {q_values_next.size()} States: {states.size()}  q_values_: {q_values}")
 
-        q_values_next = torch.zeros(self.batch_size, device=device)
-        q_values_next[states] = self.target_dqn(next_states).max(1)[0].detach()
-        print(f"q_values: {q_values_next.size()} States: {states.size()}")
-
-        q_values_update = rewards + self.gamma * q_values_next
-        loss = torch.nn.SmoothL1Loss(q_values, q_values_update)
-        optimizer.zero_grad()
+        for i in range(self.batch_size):
+            a = actions[i]
+            done = dones[i]
+            if done:
+                q_values[i][a]= rewards[i]
+            else:
+                q_values[i][a] = rewards[i] + self.gamma * q_values_next[i]
+        loss = F.smooth_l1_loss(q_values_, q_values )
+        self.optimizer.zero_grad()
         loss.backward()
-        optimizer.step()
+        self.optimizer.step()
 
     def play(self, num_episodes, render=True):
         # TODO: Model Laden hier dqn und target dqn
