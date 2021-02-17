@@ -1,164 +1,224 @@
 import collections
 import os
 import random
+import datetime
 
-from typing import Deque
+from pathlib import Path
+from collections import deque
 
 import gym
 import numpy as np
 import torch
 import torch.optim as optim
 import torch.nn.functional as F
+from nes_py.wrappers import JoypadSpace
+from gym_super_mario_bros.actions import SIMPLE_MOVEMENT
+
+
 
 from DQN_Net import DQN
 from DQN_Wapper import make_env
+from Logging import MetricLogger
 
 DQN_PATH=os.path.join("/home/dennis/Studium/RNFL_Atari/Reinforcment_Lerning_for_Atari_Game/Models")
 TARGET_DQN_PATH=os.path.join("/home/dennis/Studium/RNFL_Atari/Reinforcment_Lerning_for_Atari_Game/Models")
 class Agent:
-    def __init__(self, game: str):
+    def __init__(self, state_dim, action_dim, save_dir, env):
+        
+        self.env = env
         # DQN Env Variables
-        self.device = "cpu"
-        self.num_buff_frames = 4
-        self.env = make_env(game, self.num_buff_frames)
-        self.img_shape = (84, 84, self.num_buff_frames)
-        self.observations = self.env.observation_space.shape
-        self.actions = self.env.action_space.n
-
-        # DQN Agent Variables
-        self.replay_buffer_size = 100_000
-        self.train_start = 20_000
-        self.memory: Deque = collections.deque(maxlen=self.replay_buffer_size)
-        self.gamma = 0.95
-        self.epsilon = 1.0
-        self.epsilon_min = 0.01
-        self.epsilon_steps = 100_000
-        self.epsilon_step = (
-            self.epsilon - self.epsilon_min) / self.epsilon_steps
-        # DQN Network Variables
-        self.state_shape = self.observations
-        self.learning_rate = 1e-1
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+        self.save_dir = save_dir
+        
+        self.use_cuda = torch.cuda.is_available()
+        
+        self.net = DQN(self.state_dim, self.action_dim).float()
+        if self.use_cuda:
+            self.net = self.net.to(device="cuda")
+            
+        self.exploration_rate = 1
+        self.exploration_rate_decay = 0.99999975
+        self.exploration_rate_min = 0.1
+        self.curr_step = 0
+        
+        self.save_every= 5e5
+        
+        
+        self.memory = deque(maxlen=100000)
         self.batch_size = 32
-        self.dqn = DQN(84, 84, self.actions).to(self.device)
-        self.target_dqn = DQN(84, 84, self.actions).to(self.device)
-        self.target_dqn.load_state_dict(self.dqn.state_dict())
-        self.target_dqn.eval()
-        self.optimizer = optim.RMSprop(
-            self.dqn.parameters(), lr=0.00025, eps=0.01)
-        self.sync_models = 10_000
+        
+        self.gamma = 0.9
+        
+        self.optimizer = torch.optim.Adam(self.net.parameters(), lr=0.00025)
+        self.loss_fn = torch.nn.SmoothL1Loss()
+        
+        self.burnin = 1e4  # min. experiences before training
+        self.learn_every = 3  # no. of experiences between updates to Q_online
+        self.sync_every = 1e4 
 
     def get_action(self, state):
-        if np.random.rand() <= self.epsilon:
-            return np.random.randint(self.actions)
+        """
+    Given a state, choose an epsilon-greedy action and update value of step.
+
+    Inputs:
+    state(LazyFrame): A single observation of the current state, dimension is (state_dim)
+    Outputs:
+    action_idx (int): An integer representing which action Mario will perform
+        """
+        #Explore
+        if np.random.rand() < self.exploration_rate:
+            action_idx = np.random.randint(self.action_dim)
+        
+        #Exploit
         else:
-            return np.argmax(self.dqn(state))
-
-    def train(self, num_episodes):
-        last_rewards: Deque = collections.deque(maxlen=10)
-        best_reward_mean = 0.0
-        frame_it = 0
-        for episode in range(1, num_episodes + 1):
-            total_reward = 0.0
-            state = self.env.reset()
-            #state = np.reshape(state, newshape=(1, -1)).astype(np.float32)
-            torch.tensor(data=state, dtype=torch.float32, device=self.device)
-            while True:
-                action = self.get_action(state)
-                next_state, reward, done, _ = self.env.step(action)
-                #next_state = np.reshape(next_state, newshape=(1, -1)).astype(np.float32)
-                next_state = torch.tensor(
-                    data=next_state, dtype=torch.float32, device=self.device)
-                self.remeber(state, action, reward, next_state, done)
-                self.replay()
-                total_reward += reward
-                state = next_state
-                if frame_it & self.sync_models == 0:
-                    self.target_dqn.load_state_dict(self.dqn.state_dict())
-                if done:
-                    last_rewards.append(total_reward)
-                    curremt_reward_mean = np.mean(last_rewards)
-                    print(f"Episode: {episode} Reward: {total_reward} MeanReward: {round(curremt_reward_mean, 2)}"
-                          f"Epsilon: {round(self.epsilon, 2)} MemSize: {len(self.memory)}")
-                    if(curremt_reward_mean > best_reward_mean):
-                        best_reward_mean = curremt_reward_mean
-                        torch.save(self.dqn.state_dict(), DQN_PATH)
-                        torch.save(self.target_dqn.state_dict(),
-                                   TARGET_DQN_PATH)
-                        print(f"New best mean: {best_reward_mean}")
-                    break
-
-    def episode_anneal(self):
-        if self.memory < self.train_start:
-            return
-        if self.epsilon > self.epsilon_min:
-            self.epsilon -= self.epsilon_step
-
-    def remeber(self, state, action, reward, next_state, done):
-        self.memory.append((state, action, reward, next_state, done))
-
-    def replay(self):
-        if len(self.memory) < self.train_start:
-            return
-        minibatch = random.sample(self.memory, self.batch_size)
-        states, actions, rewards, next_states, dones = zip(*minibatch)
-
-        states = np.concatenate(states).astype(np.float32)
-        #states = torch.cat(torch.Tensor(data=states, dtype=torch.float32, device=self.device ))
-        next_states = np.concatenate(next_states).astype(np.float32)
-        #next_states = torch.cat(torch.Tensor(data=next_states, dtype=torch.float32, device=self.device ))
-        # actions = np.concatenate(actions)
-        states = torch.from_numpy(states)
-        next_states = torch.from_numpy(next_states)
-        #actions = torch.Tensor(actions.astype(np.int32)).to(self.device)
-
-        q_values = self.dqn(states)
-        q_values_=q_values
-
-        #q_values_next = torch.zeros(self.batch_size, device=self.device)
-        q_values_next = self.target_dqn(next_states).max(1)[0].detach()
-       # print(f"q_values: {q_values_next.size()} States: {states.size()}  q_values_: {q_values}")
-
-        for i in range(self.batch_size):
-            a = actions[i]
-            done = dones[i]
-            if done:
-                q_values[i][a]= rewards[i]
+            state = state.__array__()
+            if self.use_cuda:
+                state = torch.tensor(state).cuda()
             else:
-                q_values[i][a] = rewards[i] + self.gamma * q_values_next[i]
-        loss = F.smooth_l1_loss(q_values_, q_values )
+                state = torch.tensor(state)
+            state = state.unsqueeze(0)
+            action_values = self.net(state, model="online")
+            action_idx = torch.argmax(action_values, axis=1).item()
+            
+        self.exploration_rate *= self.exploration_rate_decay
+        self.exploration_rate = max(self.exploration_rate_min, self.exploration_rate)
+        
+        self.curr_step +=1
+        return action_idx
+    
+    def cache(self, state, next_state, action, reward, done):
+        """
+        Store the experience to self.memory (replay buffer)
+
+        Inputs:
+        state (LazyFrame),
+        next_state (LazyFrame),
+        action (int),
+        reward (float),
+        done(bool))
+        """
+        state = state.__array__()
+        next_state = next_state.__array__()
+        
+        if self.use_cuda:
+            state = torch.tensor(state).cuda()
+            next_state = torch.tensor(next_state).cuda()
+            action = torch.tensor([action]).cuda()
+            reward = torch.tensor([reward]).cuda()
+            done = torch.tensor(done).cuda()
+        else:
+            state = torch.tensor(state)
+            next_state = torch.tensor(next_state)
+            action = torch.tensor([action])
+            reward = torch.tensor([reward])
+            done = torch.tensor(done)
+
+        self.memory.append((state, next_state, action, reward, done,))
+        
+    def recall(self):
+        batch = random.sample(self.memory, self.batch_size)
+        state, next_state, action, reward, done = map(torch.stack, zip(*batch))
+        return state, next_state, action.squeeze(), reward.squeeze(), done.squeeze()
+    
+    
+    def td_estimator(self, state, action):
+        current_Q = self.net(state, model="online")[np.arange(0, self.batch_size), action]#Q(s,a)
+        return current_Q
+    
+    @torch.no_grad()
+    def td_target(self, reward, next_state, done):
+        next_state_Q = self.net(next_state, model="online")
+        best_action = torch.argmax(next_state_Q, axis=1)
+        next_Q = self.net(next_state, model="target")[np.arange(0, self.batch_size), best_action]
+        return (reward + (1- done.float())* self.gamma *next_Q).float()
+    
+    def update_Q_online(self, td_estimator, td_target):
+        loss = self.loss_fn(td_estimator, td_target)
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
-
-    def play(self, num_episodes, render=True):
-        # TODO: Model Laden hier dqn und target dqn
-        self.dqn.load_state_dict(torch.load(DQN_PATH))
-        self.target_dqn.load_state_dict(torch.load(TARGET_DQN_PATH))
-
-        for episode in self.range(1, num_episodes + 1):
-            total_reward = 0.0
+        return loss.item()
+    
+    def sync_Q_target(self):
+        self.net.target.load_state_dict(self.net.online.state_dict())
+        
+    def save(self):
+        save_path = (
+            self.save_dir / f"mario_net_{int(self.curr_step // self.save_every)}.chkpt"
+        )
+        torch.save(
+            dict(model=self.net.state_dict(), exploration_rate=self.exploration_rate),
+            save_path,
+        )
+        print(f"MarioNet saved to {save_path} at step {self.curr_step}")
+        
+        
+    def lerne(self):
+        if self.curr_step % self.sync_every == 0:
+            self.sync_Q_target()
+            
+        if self.curr_step % self.save_every == 0:
+            self.save()
+            
+        if self.curr_step < self.burnin:
+            return None, None
+        
+        if self.curr_step % self.learn_every != 0:
+            return None, None
+        
+        state, next_state, action, reward, done = self.recall()
+        
+        td_est = self.td_estimator(state, action)
+        
+        td_tgt = self.td_target(reward, next_state, done)
+        
+        loss = self.update_Q_online(td_est, td_tgt)
+        
+        return (td_est.mean().item(), loss)
+    
+    def run(self, save_dir, episodes):
+        logger = MetricLogger(save_dir)
+        for e in range(episodes):
             state = self.env.reset()
-            #state = np.reshape(state, newshape=(1, -1)).astype(np.float32)
-            state = torch.tensor(
-                data=state, dtype=torch.float32, device=self.device)
+            
             while True:
-                if render:
-                    self.env.render()
+                #self.env.render()
                 action = self.get_action(state)
-                next_state, reward, done, _ = self.env.step(action)
-                #next_state = np.reshape(next_state, newshape=(1, -1)).astype(np.float32)
-                next_state = torch.tensor(
-                    data=next_state, dtype=torch.float32, device=self.device)
-                total_reward += reward
+                
+                next_state, reward, done, info = self.env.step(action)
+                
+                self.cache(state, next_state, action, reward, done)
+                
+                q, loss = self.lerne()
+                
+                logger.log_step(reward, loss, q)
+                
                 state = next_state
-                if done:
-                    print(
-                        f"Episode: {episode} Reward: {total_reward} Epsilon: {self.epsilon}")
+                
+                if done or info["flag_get"]:
+                    break
+                
+            logger.log_episode()
+            
+            if e % 20 == 0:
+                logger.record(episode=e, epsilon=self.exploration_rate, step=self.curr_step)
+        
 
 
 if __name__ == "__main__":
-    game = "PongNoFrameskip-v4"
-    agent = Agent(game)
-    agent.train(num_episodes=3_000)
-    input("Play?")
-    agent.play(num_episodes=30, render=True)
+    use_cuda = torch.cuda.is_available()
+    print(f"Using CUDA: {use_cuda}")
+    print()
+
+    save_dir = Path("checkpoints") / datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+    save_dir.mkdir(parents=True)
+    
+    
+    game = "SuperMarioBros-1-1-v0"
+    env =make_env(game, 4)
+    env = JoypadSpace(env, SIMPLE_MOVEMENT)
+    agent = Agent(state_dim=(4, 84, 84), action_dim=env.action_space.n, save_dir=save_dir, env=env)
+    agent.run(save_dir, 10)
+    #input("Play?")
+    #agent.play(num_episodes=30, render=True)

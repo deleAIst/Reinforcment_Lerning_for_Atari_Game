@@ -4,27 +4,31 @@ import torch.optim as optim
 import torch.nn.functional as F
 import torchvision.transforms as T
 
+import copy
+
 
 class DQN(nn.Module):
-    def __init__(self, h, w, output):
+    def __init__(self, input_dim, output_dim):
         super(DQN, self).__init__()
-        self.conv1 = nn.Conv2d(4, 16, kernel_size=5, stride=2)
-        self.bn1 = nn.BatchNorm2d(16)
-        self.conv2 = nn.Conv2d(16, 32, kernel_size=5, stride=2)
-        self.bn2 = nn.BatchNorm2d(32)
-        self.conv3 = nn.Conv2d(32, 32, kernel_size=5, stride=2)
-        self.bn3 = nn.BatchNorm2d(32)
+        c, h, w = input_dim
         
-        def conv2d_size_out(size, kernel_size= 5, stride=2):
-            return (size-(kernel_size-1)-1)// stride+1
-        convw = conv2d_size_out(conv2d_size_out(conv2d_size_out(w)))
-        convh = conv2d_size_out(conv2d_size_out(conv2d_size_out(h)))
-        linear_input_size= convh*convw *32
-        self.head = nn.Linear(linear_input_size, output)
-
-    def forward(self, x):
-        x =F.relu(self.bn1(self.conv1(x)))
-        x =F.relu(self.bn2(self.conv2(x)))
-        x =F.relu(self.bn3(self.conv3(x)))
-        return self.head(x.view(x.size(0), -1))
-    
+        self.online = nn.Sequential(
+            nn.Conv2d(in_channels=c, out_channels=32, kernel_size=8, stride=4),
+            nn.ReLU(),
+            nn.Conv2d(in_channels=32, out_channels=64, kernel_size=4, stride=2),
+            nn.ReLU(),
+            nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=1),
+            nn.ReLU(),
+            nn.Flatten(),
+            nn.Linear(3136, 512),
+            nn.ReLU(),
+            nn.Linear(512, output_dim)
+        )
+        
+        self.target = copy.deepcopy(self.online)
+        
+    def forward(self, input, model):
+        if model == "online":
+            return self.online(input)
+        elif model == "target":
+            return self.target(input)

@@ -1,62 +1,78 @@
-import collections
+# !pip install gym-super-mario-bros==7.3.0
+
+from collections import deque
 from typing import Any, Deque, Tuple
 
 import gym
+from gym.spaces import Box
+from gym.wrappers import FrameStack
+import gym_super_mario_bros
+
 import numpy as np
 
-class StartGameWapper(gym.Wrapper):
-    def __init__(self, env: gym.Env):
+import torch
+from torchvision import transforms as T
+
+class SkipFrame(gym.Wrapper):
+    def __init__(self, env: gym.Env, skip):
         super().__init__(env)
-        env.reset()
+        self._skip = skip
         
-    def reset(self, **kwargs: Any):
-        self.env.reset()
-        observation, _, _, _ = self.env.step(1) #FIRE
+    def step(self, action):
+        total_reward= 0.0
+        done= False
+        for i in range(self._skip):
+            state, reward, done, info = self.env.step(action)
+            total_reward *= reward
+            if done:
+                break
+        return state, reward, done, info
+        
+class GreayScaleObservatiom(gym.ObservationWrapper):
+    def __init__(self, env):
+        super().__init__(env)
+        obs_shape = self.observation_space.shape[:2]
+        self.observation_shape = Box(low=0, high=255, shape=obs_shape, dtype=np.uint8)
+        
+    def permute_orientation(self, observation):
+        observation = np.transpose(observation, (2, 0, 1))
+        observation = torch.tensor(observation.copy(), dtype=torch.float)
+        return observation
+        
+    
+    def observation(self, observation):
+        observation = self.permute_orientation(observation)
+        transform = T.Grayscale()
+        observation = transform(observation)
         return observation
     
-
-class FrameStartGameWapper(gym.Wrapper):
-    def __init__(self, env: gym.Env, num_buff_frames: int):
+class ResizeObservation(gym.ObservationWrapper):
+    def __init__(self, env, shape):
         super().__init__(env)
-        self.num_buff_frames = num_buff_frames
-        self.frames: Deque = collections.deque(maxlen=self.num_buff_frames)
-        low = np.repeat(self.observation_space.low[np.newaxis, ], repeats=self.num_buff_frames,axis=0)
-        high = np.repeat(self.observation_space.high[np.newaxis, ], repeats=self.num_buff_frames,axis=0)
-        self.observation_space= gym.spaces.Box(low=low, high=high, dtype=self.observation_space.dtype)
+        if isinstance(shape, int):
+            self.shape = (shape, shape)
+        else:
+            self.shape = tuple(shape)
         
-    def step(self, action: int)-> Tuple[np.ndarray, float, bool, dict]:
-        observation, reward, done, info = self.env.step(action)
-        self.frames.append(observation)
-        frame_stack = np.asarray(self.frames, dtype=np.float32) #(4, 84, 84)
-        frame_stack = np.moveaxis(frame_stack, 0, 0)#(84, 84, 4)
-        frame_stack = np.expand_dims(frame_stack, 0) #(1, 84, 84, 4)
-        return frame_stack, reward, done, info
-    
-    def reset(self, **kwargs: Any) -> np.ndarray:
-        self.env.reset(**kwargs)
-        self.frames: Deque = collections.deque(maxlen=self.num_buff_frames)
-        for _ in range(self.num_buff_frames):
-            self.frames.append(np.zeros(shape=(84,84), dtype=np.float32))
-        frame_stack = np.zeros(shape=(1, 84, 84, 4), dtype=np.float32)
-        return frame_stack
-    
+    def observation(self,observation):
+        transform = T.Compose(
+            [T.Resize(self.shape), T.Normalize(0, 255)]
+        )
+        observation = transform(observation).squeeze(0)
+        return observation
+        
+        
 def make_env(game: str, num_buff_frames: int):
-    env = gym.make(game)
-    env = gym.wrappers.AtariPreprocessing(env=env, 
-                                          noop_max=20, 
-                                          frame_skip=4, 
-                                          screen_size=84, 
-                                          terminal_on_life_loss=False, 
-                                          grayscale_obs=True, 
-                                          scale_obs=True)
-    
-    env = FrameStartGameWapper(env=env, num_buff_frames=num_buff_frames)
-    env =StartGameWapper(env=env)
+    env = gym_super_mario_bros.make(game)
+    env = SkipFrame(env, skip=4)
+    env = GreayScaleObservatiom(env)
+    env = ResizeObservation(env, shape=84)
+    env = FrameStack(env, num_stack=num_buff_frames)
     return env
 
 
 if __name__ == "__main__":
-    game = "PongNoFrameskip-v4"
+    game = "SuperMarioBros-1-1-v0"
     num_buff_frames = 4
     env = make_env(game=game, num_buff_frames=num_buff_frames)
     
