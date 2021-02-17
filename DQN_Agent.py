@@ -106,13 +106,13 @@ class Agent:
             next_state = torch.tensor(next_state).cuda()
             action = torch.tensor([action]).cuda()
             reward = torch.tensor([reward]).cuda()
-            done = torch.tensor(done).cuda()
+            done = torch.tensor([done]).cuda()
         else:
             state = torch.tensor(state)
             next_state = torch.tensor(next_state)
             action = torch.tensor([action])
             reward = torch.tensor([reward])
-            done = torch.tensor(done)
+            done = torch.tensor([done])
 
         self.memory.append((state, next_state, action, reward, done,))
         
@@ -180,6 +180,7 @@ class Agent:
     def run(self, save_dir, episodes):
         logger = MetricLogger(save_dir)
         for e in range(episodes):
+            
             state = self.env.reset()
             
             while True:
@@ -196,7 +197,7 @@ class Agent:
                 
                 state = next_state
                 
-                if done or info["flag_get"]:
+                if done:
                     break
                 
             logger.log_episode()
