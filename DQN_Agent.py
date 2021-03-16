@@ -19,6 +19,8 @@ from gym_super_mario_bros.actions import SIMPLE_MOVEMENT
 from DQN_Net import DQN
 from DQN_Wapper import make_env
 from Logging import MetricLogger
+os.environ['DISPLAY'] = ':1'
+
 
 DQN_PATH=os.path.join("/home/dennis/Studium/RNFL_Atari/Reinforcment_Lerning_for_Atari_Game/Models")
 TARGET_DQN_PATH=os.path.join("/home/dennis/Studium/RNFL_Atari/Reinforcment_Lerning_for_Atari_Game/Models")
@@ -30,7 +32,9 @@ class Agent:
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.save_dir = save_dir
+        self.save_path = ""
         
+        #self.use_cuda = False
         self.use_cuda = torch.cuda.is_available()
         
         self.net = DQN(self.state_dim, self.action_dim).float()
@@ -45,7 +49,7 @@ class Agent:
         self.save_every= 5e5
         
         
-        self.memory = deque(maxlen=100000)
+        self.memory = deque(maxlen=95_000)
         self.batch_size = 32
         
         self.gamma = 0.9
@@ -101,18 +105,18 @@ class Agent:
         state = state.__array__()
         next_state = next_state.__array__()
         
-        if self.use_cuda:
-            state = torch.tensor(state).cuda()
-            next_state = torch.tensor(next_state).cuda()
-            action = torch.tensor([action]).cuda()
-            reward = torch.tensor([reward]).cuda()
-            done = torch.tensor([done]).cuda()
-        else:
-            state = torch.tensor(state)
-            next_state = torch.tensor(next_state)
-            action = torch.tensor([action])
-            reward = torch.tensor([reward])
-            done = torch.tensor([done])
+        #if self.use_cuda:
+         #   state = torch.tensor(state).cuda()
+          #  next_state = torch.tensor(next_state).cuda()
+           # action = torch.tensor([action]).cuda()
+            #reward = torch.tensor([reward]).cuda()
+           # done = torch.tensor([done]).cuda()
+        #else:
+        state = torch.tensor(state)
+        next_state = torch.tensor(next_state)
+        action = torch.tensor([action])
+        reward = torch.tensor([reward])
+        done = torch.tensor([done])
 
         self.memory.append((state, next_state, action, reward, done,))
         
@@ -123,15 +127,15 @@ class Agent:
     
     
     def td_estimator(self, state, action):
-        current_Q = self.net(state, model="online")[np.arange(0, self.batch_size), action]#Q(s,a)
+        current_Q = self.net(state.cuda(), model="online")[np.arange(0, self.batch_size), action]#Q(s,a)
         return current_Q
     
     @torch.no_grad()
     def td_target(self, reward, next_state, done):
-        next_state_Q = self.net(next_state, model="online")
+        next_state_Q = self.net(next_state.cuda(), model="online")
         best_action = torch.argmax(next_state_Q, axis=1)
-        next_Q = self.net(next_state, model="target")[np.arange(0, self.batch_size), best_action]
-        return (reward + (1- done.float())* self.gamma *next_Q).float()
+        next_Q = self.net(next_state.cuda(), model="target")[np.arange(0, self.batch_size), best_action]
+        return (reward.cuda() + (1- done.cuda().float())* self.gamma *next_Q).float()
     
     def update_Q_online(self, td_estimator, td_target):
         loss = self.loss_fn(td_estimator, td_target)
@@ -144,14 +148,14 @@ class Agent:
         self.net.target.load_state_dict(self.net.online.state_dict())
         
     def save(self):
-        save_path = (
+        self.save_path = (
             self.save_dir / f"mario_net_{int(self.curr_step // self.save_every)}.chkpt"
         )
         torch.save(
             dict(model=self.net.state_dict(), exploration_rate=self.exploration_rate),
-            save_path,
+            self.save_path,
         )
-        print(f"MarioNet saved to {save_path} at step {self.curr_step}")
+        print(f"MarioNet saved to {self.save_path} at step {self.curr_step}")
         
         
     def lerne(self):
@@ -200,26 +204,49 @@ class Agent:
                 if done:
                     break
                 
+                
             logger.log_episode()
             
             if e % 20 == 0:
                 logger.record(episode=e, epsilon=self.exploration_rate, step=self.curr_step)
         
+        
+    def play(self):
+        state_dict =torch.load("/home/dennis/Studium/RNFL_Atari/Reinforcment_Lerning_for_Atari_Game/checkpoints/2021-03-14T12-14-07/mario_net_30.chkpt")
+        self.net.load_state_dict(state_dict['model'])
+        self.net.eval()
+        state = self.env.reset()
+        while True: 
+            self.env.render()
+            state = state.__array__()
+            if self.use_cuda:
+                state = torch.tensor(state).cuda()
+            else:
+                state = torch.tensor(state)
+            state = state.unsqueeze(0)
+            action_values = self.net(state, model="online")
+            action_idx = torch.argmax(action_values, axis=1).item()
+            next_state, reward, done, info =self.env.step(action=action_idx)
+            state = next_state
+            if done:
+                break
+        print(f"{next_state.shape},\n {reward},\n {done},\n {info}")
 
 
 if __name__ == "__main__":
     use_cuda = torch.cuda.is_available()
     print(f"Using CUDA: {use_cuda}")
-    print()
-
-    save_dir = Path("checkpoints") / datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
-    save_dir.mkdir(parents=True)
+    time=datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+    save_dir = Path(f"checkpoints/{time}")
+    if not save_dir.exists():
+        save_dir.mkdir()
     
     
-    game = "SuperMarioBros-1-1-v0"
+    game = "SuperMarioBros-v0"
+    #TODO: Time and Lives beim tränig ausschalten 
     env =make_env(game, 4)
     env = JoypadSpace(env, SIMPLE_MOVEMENT)
-    agent = Agent(state_dim=(4, 84, 84), action_dim=env.action_space.n, save_dir=save_dir, env=env)
-    agent.run(save_dir, 10)
+    agent = Agent(state_dim=(4, 84, 84), action_dim=env.action_space.n, save_dir=save_dir.absolute(), env=env)
+    agent.run(save_dir.absolute(), 50_000)
     #input("Play?")
-    #agent.play(num_episodes=30, render=True)
+    agent.play()
