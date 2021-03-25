@@ -27,6 +27,9 @@ class DQN(nn.Module):
         
         self.target = copy.deepcopy(self.online)
         
+        for p in self.target.parameters():
+            p.requires_grad = False
+        
     def forward(self, input, model):
         if model == "online":
             return self.online(input)
