@@ -9,28 +9,45 @@ import copy
 
 class DQN(nn.Module):
     def __init__(self, input_dim, output_dim):
+        """Creates the structure of the LeNet
+
+        Args:
+            input_dim : How images must be entered into the model
+            output_dim : what an output size the model returns
+        """
         super(DQN, self).__init__()
         c, h, w = input_dim
-        
+
         self.online = nn.Sequential(
             nn.Conv2d(in_channels=c, out_channels=32, kernel_size=8, stride=4),
             nn.ReLU(),
-            nn.Conv2d(in_channels=32, out_channels=64, kernel_size=4, stride=2),
+            nn.Conv2d(in_channels=32, out_channels=64,
+                      kernel_size=4, stride=2),
             nn.ReLU(),
-            nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=1),
+            nn.Conv2d(in_channels=64, out_channels=64,
+                      kernel_size=3, stride=1),
             nn.ReLU(),
             nn.Flatten(),
             nn.Linear(3136, 512),
             nn.ReLU(),
             nn.Linear(512, output_dim)
         )
-        
+        # Makes a cope of the model's strucutre
         self.target = copy.deepcopy(self.online)
-        
+        # That with backprobergation the model does not update itself with updates
         for p in self.target.parameters():
             p.requires_grad = False
-        
+
     def forward(self, input, model):
+        """Makes the prediction for the input image
+
+        Args:
+            input : Image in arrye shape
+            model : which model should make the prediction.
+
+        Returns:
+            an arrye with probabilities which action is best
+        """
         if model == "online":
             return self.online(input)
         elif model == "target":
